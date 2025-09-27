@@ -39,6 +39,10 @@ public class XRSharingClient : MonoBehaviour
     private Thread receiveThread;
     private bool running = false;
     
+    // UDPクライアント
+    private UdpClient udpClient;
+    private bool udpConnected = false;
+    
     // イベント
     public System.Action<string, string> OnMessageReceived; // (message, fromUserId)
     public System.Action OnConnected;
@@ -55,9 +59,16 @@ public class XRSharingClient : MonoBehaviour
     
     void OnGUI()
     {
-        GUILayout.BeginArea(new Rect(10, 10, 300, 200));
+        // 右画面に配置（画面幅の半分から開始）
+        float screenWidth = Screen.width;
+        float rightPanelX = screenWidth / 2 + 10;
+        float rightPanelY = 10;
+        float rightPanelWidth = screenWidth / 2 - 20;
+        float rightPanelHeight = 400;
         
-        GUILayout.Label("XR Sharing Client", GUI.skin.box);
+        GUILayout.BeginArea(new Rect(rightPanelX, rightPanelY, rightPanelWidth, rightPanelHeight));
+        
+        GUILayout.Label("=== XRSharingClient ===", GUI.skin.box);
         
         if (GUILayout.Button(isConnected ? "切断" : "接続"))
         {
@@ -71,16 +82,30 @@ public class XRSharingClient : MonoBehaviour
             }
         }
         
-        GUILayout.Label("状態: " + (isConnected ? "接続中" : "未接続"));
+        GUILayout.Space(10);
+        GUILayout.Label("TCP状態: " + (isConnected ? "接続中" : "未接続"));
+        GUILayout.Label("UDP状態: " + (udpConnected ? "接続中" : "未接続"));
         GUILayout.Label("セッションID: " + sessionId);
         GUILayout.Label("UserID: " + userId);
         
+        GUILayout.Space(10);
         if (isConnected)
         {
-            GUILayout.Label("メッセージ送信テスト:");
+            GUILayout.Label("=== TCPメッセージ送信テスト ===");
             if (GUILayout.Button("Hello World"))
             {
                 SendMessage("Hello World from " + userId);
+            }
+            
+            GUILayout.Space(10);
+            GUILayout.Label("=== UDP Transform送信テスト ===");
+            if (GUILayout.Button("Transform送信"))
+            {
+                // メインカメラのTransformを送信
+                if (Camera.main != null)
+                {
+                    SendTransformData(Camera.main.transform);
+                }
             }
         }
         
@@ -100,14 +125,21 @@ public class XRSharingClient : MonoBehaviour
             var (host, port) = ParseServerURL(serverURL);
             LogDebug("接続試行: " + host + ":" + port);
             
+            // TCP接続
             client = new TcpClient();
             client.Connect(host, port);
             stream = client.GetStream();
             
+            // UDP接続（TCPポート+1を使用）
+            udpClient = new UdpClient();
+            udpClient.Connect(host, port + 1);
+            
             isConnected = true;
+            udpConnected = true;
             running = true;
             
-            LogDebug("サーバーに接続成功: " + host + ":" + port);
+            LogDebug("TCPサーバーに接続成功: " + host + ":" + port);
+            LogDebug("UDPサーバーに接続成功: " + host + ":" + (port + 1));
             
             // 受信スレッド開始
             receiveThread = new Thread(ReceiveMessages);
@@ -130,6 +162,7 @@ public class XRSharingClient : MonoBehaviour
     {
         running = false;
         isConnected = false;
+        udpConnected = false;
         
         if (stream != null)
         {
@@ -143,10 +176,16 @@ public class XRSharingClient : MonoBehaviour
             client = null;
         }
         
+        if (udpClient != null)
+        {
+            udpClient.Close();
+            udpClient = null;
+        }
+        
         sessionId = "";
         userId = "";
         
-        LogDebug("サーバーから切断");
+        LogDebug("TCP/UDPサーバーから切断");
         OnDisconnected?.Invoke();
     }
     
@@ -273,6 +312,47 @@ public class XRSharingClient : MonoBehaviour
             LogError("URL解析エラー: " + e.Message);
             LogError("URL: " + url);
             return ("localhost", 7777);
+        }
+    }
+    
+    /// <summary>
+    /// UDPでTransformDataを送信
+    /// </summary>
+    public void SendTransformData(UnityEngine.Transform transform)
+    {
+        if (!udpConnected || udpClient == null)
+        {
+            LogError("UDP接続されていません");
+            return;
+        }
+        
+        try
+        {
+            // TransformDataを作成
+            var transformData = new XRSharing.TransformData
+            {
+                header = "TRNS",
+                userId = userId ?? "unknown_user",
+                sessionId = sessionId ?? "unknown_session",
+                position = transform.position,
+                rotation = transform.rotation,
+                timestamp = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            };
+            
+            // サンプルと同じ方式でシリアライズ
+            var options = MessagePackSerializerOptions.Standard.WithResolver(CompositeResolver.Create(
+                new IMessagePackFormatter[] { new XRSharing.TransformDataFormatter() },
+                new IFormatterResolver[] { XRSharing.TransformDataResolver.Instance }
+            ));
+            
+            byte[] data = MessagePackSerializer.Serialize(transformData, options);
+            udpClient.Send(data, data.Length);
+            
+            LogDebug("UDP TransformData送信完了: " + transformData.userId);
+        }
+        catch (Exception e)
+        {
+            LogError("UDP TransformData送信エラー: " + e.Message);
         }
     }
     

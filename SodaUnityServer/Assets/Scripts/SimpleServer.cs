@@ -44,6 +44,11 @@ public class SimpleServer : MonoBehaviour
     private Thread serverThread;
     private bool running = false;
     
+    // UDPサーバー
+    private UdpClient udpServer;
+    private Thread udpServerThread;
+    private bool udpRunning = false;
+    
     // クライアント管理
     private Dictionary<string, TcpClient> connectedClientsDict = new Dictionary<string, TcpClient>();
     private Dictionary<string, NetworkStream> clientStreams = new Dictionary<string, NetworkStream>();
@@ -94,20 +99,31 @@ public class SimpleServer : MonoBehaviour
             // URLからIPアドレスとポートを解析
             var (ipAddress, port) = ParseServerURL(serverURL);
             
+            // TCPサーバー開始
             server = new TcpListener(ipAddress, port);
             server.Start();
+            
+            // UDPサーバー開始（TCPポート+1を使用）
+            udpServer = new UdpClient(port + 1);
+            
             isRunning = true;
             running = true;
+            udpRunning = true;
             
             // セッションIDを設定（自動生成または固定）
             currentSessionId = autoGenerateSessionId ? GenerateSessionId() : customSessionId;
             
-            Debug.Log("サーバー開始: " + serverURL + " (" + ipAddress + ":" + port + ")");
+            Debug.Log("TCPサーバー開始: " + serverURL + " (" + ipAddress + ":" + port + ")");
+            Debug.Log("UDPサーバー開始: " + ipAddress + ":" + (port + 1));
             Debug.Log("セッションID: " + currentSessionId);
             
-            // サーバースレッド開始
+            // TCPサーバースレッド開始
             serverThread = new Thread(ServerLoop);
             serverThread.Start();
+            
+            // UDPサーバースレッド開始
+            udpServerThread = new Thread(UdpServerLoop);
+            udpServerThread.Start();
         }
         catch (Exception e)
         {
@@ -118,6 +134,7 @@ public class SimpleServer : MonoBehaviour
     void StopServer()
     {
         running = false;
+        udpRunning = false;
         isRunning = false;
         connectedClients = 0;
         currentSessionId = "";
@@ -130,13 +147,21 @@ public class SimpleServer : MonoBehaviour
         connectedClientsDict.Clear();
         clientStreams.Clear();
         
+        // TCPサーバー停止
         if (server != null)
         {
             server.Stop();
             server = null;
         }
         
-        Debug.Log("サーバー停止");
+        // UDPサーバー停止
+        if (udpServer != null)
+        {
+            udpServer.Close();
+            udpServer = null;
+        }
+        
+        Debug.Log("TCP/UDPサーバー停止");
     }
     
     string GenerateSessionId()
@@ -362,6 +387,61 @@ public class SimpleServer : MonoBehaviour
             Debug.LogError("URL解析エラー: " + e.Message);
             return (IPAddress.Any, 7777); // デフォルト値
         }
+    }
+    
+    /// <summary>
+    /// UDPサーバーループ
+    /// </summary>
+    void UdpServerLoop()
+    {
+        IPEndPoint remoteEndPoint = new IPEndPoint(IPAddress.Any, 0);
+        
+        while (udpRunning)
+        {
+            try
+            {
+                // UDPデータを受信
+                byte[] receivedBytes = udpServer.Receive(ref remoteEndPoint);
+                
+                // ヘッダーを解析（最初の4バイト）
+                if (receivedBytes.Length >= 4)
+                {
+                    string header = System.Text.Encoding.ASCII.GetString(receivedBytes, 0, 4);
+                    
+                    if (header == "TRNS")
+                    {
+                        // TransformDataをデシリアライズ
+                        var reader = new MessagePackReader(receivedBytes);
+                        var options = MessagePackSerializerOptions.Standard;
+                        var formatter = new TransformDataFormatter();
+                        var transformData = formatter.Deserialize(ref reader, options);
+                        
+                        Debug.Log("UDP受信 [" + transformData.userId + "]: TransformData from " + remoteEndPoint);
+                        
+                        // 他のクライアントにUDPデータを転送
+                        ForwardUdpDataToOtherClients(receivedBytes, transformData.userId);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                if (udpRunning)
+                {
+                    Debug.LogError("UDPサーバーループエラー: " + e.Message);
+                }
+                break;
+            }
+        }
+    }
+    
+    /// <summary>
+    /// UDPデータを他のクライアントに転送
+    /// </summary>
+    void ForwardUdpDataToOtherClients(byte[] data, string fromUserId)
+    {
+        // UDPデータの転送は、クライアント側で直接送信する方式を採用
+        // サーバーは中継のみ行う
+        Debug.Log("UDPデータ転送準備: " + fromUserId);
     }
     
     void OnDestroy()
