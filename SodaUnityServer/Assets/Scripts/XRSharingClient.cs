@@ -6,6 +6,7 @@ using MessagePack;
 using MessagePack.Resolvers;
 using MessagePack.Formatters;
 using XRSharing;
+using System.Collections.Generic;
 
 /// <summary>
 /// XRシェアリング用クライアント（パッケージ版）
@@ -29,6 +30,27 @@ public class XRSharingClient : MonoBehaviour
     [Tooltip("Current user ID (auto-assigned by server)")]
     public string userId = "";
     
+    [Header("Transform Settings")]
+    [Tooltip("Transform objects to send via UDP")]
+    public Transform[] transformTargets = new Transform[0];
+    
+    [Tooltip("Transform objects to sync with received data")]
+    public Transform[] syncTargets = new Transform[0];
+    
+    [Tooltip("Enable automatic transform synchronization")]
+    public bool enableAutoSync = true;
+    
+    [Tooltip("Smoothing factor for transform interpolation (0-1)")]
+    [Range(0f, 1f)]
+    public float smoothingFactor = 0.1f;
+    
+    [Tooltip("Allow receiving own transform data (for testing)")]
+    public bool allowOwnData = true;
+    
+    [Tooltip("Transform send interval in seconds (0 = every frame)")]
+    [Range(0f, 1f)]
+    public float transformSendInterval = 0.1f; // 10fps
+    
     [Header("Debug Settings")]
     [Tooltip("Enable debug log output")]
     public bool enableDebugLogs = true;
@@ -43,8 +65,17 @@ public class XRSharingClient : MonoBehaviour
     private UdpClient udpClient;
     private bool udpConnected = false;
     
+    // Transform同期用
+    private Dictionary<string, TransformData> receivedTransforms = new Dictionary<string, TransformData>();
+    private Dictionary<string, Vector3> targetPositions = new Dictionary<string, Vector3>();
+    private Dictionary<string, Quaternion> targetRotations = new Dictionary<string, Quaternion>();
+    
+    // Transform送信用
+    private float lastTransformSendTime = 0f;
+    
     // イベント
     public System.Action<string, string> OnMessageReceived; // (message, fromUserId)
+    public System.Action<string, TransformData> OnTransformReceived; // (userId, transformData)
     public System.Action OnConnected;
     public System.Action OnDisconnected;
     public System.Action<string> OnError;
@@ -54,6 +85,29 @@ public class XRSharingClient : MonoBehaviour
         if (autoConnect)
         {
             ConnectToServer();
+        }
+    }
+    
+    void Update()
+    {
+        if (isConnected)
+        {
+            // 自動同期処理
+            if (enableAutoSync)
+            {
+                SyncTransforms();
+            }
+            
+            // 継続的なTransform送信（サーバーにUDPエンドポイントを学習させるため）
+            if (transformTargets != null && transformTargets.Length > 0)
+            {
+                float currentTime = Time.time;
+                if (transformSendInterval <= 0f || currentTime - lastTransformSendTime >= transformSendInterval)
+                {
+                    SendAllTransformData();
+                    lastTransformSendTime = currentTime;
+                }
+            }
         }
     }
     
@@ -101,12 +155,17 @@ public class XRSharingClient : MonoBehaviour
             GUILayout.Label("=== UDP Transform送信テスト ===");
             if (GUILayout.Button("Transform送信"))
             {
-                // メインカメラのTransformを送信
-                if (Camera.main != null)
-                {
-                    SendTransformData(Camera.main.transform);
-                }
+                // 設定されたTransform配列から送信
+                SendAllTransformData();
             }
+            
+            GUILayout.Space(10);
+            GUILayout.Label("=== Transform同期設定 ===");
+            enableAutoSync = GUILayout.Toggle(enableAutoSync, "自動同期");
+            allowOwnData = GUILayout.Toggle(allowOwnData, "自分のデータも受信（テスト用）");
+            smoothingFactor = GUILayout.HorizontalSlider(smoothingFactor, 0f, 1f);
+            GUILayout.Label("スムージング: " + smoothingFactor.ToString("F2"));
+            GUILayout.Label("受信Transform数: " + receivedTransforms.Count);
         }
         
         GUILayout.EndArea();
@@ -144,6 +203,10 @@ public class XRSharingClient : MonoBehaviour
             // 受信スレッド開始
             receiveThread = new Thread(ReceiveMessages);
             receiveThread.Start();
+            
+            // UDP受信スレッド開始
+            Thread udpReceiveThread = new Thread(ReceiveUdpMessages);
+            udpReceiveThread.Start();
             
             OnConnected?.Invoke();
         }
@@ -184,6 +247,9 @@ public class XRSharingClient : MonoBehaviour
         
         sessionId = "";
         userId = "";
+        receivedTransforms.Clear();
+        targetPositions.Clear();
+        targetRotations.Clear();
         
         LogDebug("TCP/UDPサーバーから切断");
         OnDisconnected?.Invoke();
@@ -316,9 +382,49 @@ public class XRSharingClient : MonoBehaviour
     }
     
     /// <summary>
+    /// 設定されたTransform配列を全て送信
+    /// </summary>
+    public void SendAllTransformData()
+    {
+        LogDebug("SendAllTransformData開始");
+        LogDebug($"UDP接続状態: {udpConnected}, udpClient: {udpClient != null}");
+        
+        if (!udpConnected || udpClient == null)
+        {
+            LogError("UDP接続されていません");
+            return;
+        }
+        
+        if (transformTargets == null || transformTargets.Length == 0)
+        {
+            LogError("Transform配列が設定されていません");
+            return;
+        }
+        
+        LogDebug($"Transform配列数: {transformTargets.Length}");
+        
+        int sentCount = 0;
+        for (int i = 0; i < transformTargets.Length; i++)
+        {
+            if (transformTargets[i] != null)
+            {
+                LogDebug($"Transform[{i}]送信: {transformTargets[i].name}");
+                SendTransformData(transformTargets[i], i);
+                sentCount++;
+            }
+            else
+            {
+                LogDebug($"Transform[{i}]はnull");
+            }
+        }
+        
+        LogDebug($"UDP TransformData送信完了: {sentCount}個のTransformを送信");
+    }
+    
+    /// <summary>
     /// UDPでTransformDataを送信
     /// </summary>
-    public void SendTransformData(UnityEngine.Transform transform)
+    public void SendTransformData(UnityEngine.Transform transform, int index = 0)
     {
         if (!udpConnected || udpClient == null)
         {
@@ -345,14 +451,162 @@ public class XRSharingClient : MonoBehaviour
                 new IFormatterResolver[] { XRSharing.TransformDataResolver.Instance }
             ));
             
-            byte[] data = MessagePackSerializer.Serialize(transformData, options);
+            byte[] transformDataBytes = MessagePackSerializer.Serialize(transformData, options);
+            
+            // ヘッダーを追加
+            byte[] headerBytes = System.Text.Encoding.ASCII.GetBytes("TRNS");
+            byte[] data = new byte[headerBytes.Length + transformDataBytes.Length];
+            Array.Copy(headerBytes, 0, data, 0, headerBytes.Length);
+            Array.Copy(transformDataBytes, 0, data, headerBytes.Length, transformDataBytes.Length);
+            
             udpClient.Send(data, data.Length);
             
-            LogDebug("UDP TransformData送信完了: " + transformData.userId);
+            LogDebug($"UDP TransformData[{index}]送信完了: {transformData.userId} - {transform.name}");
         }
         catch (Exception e)
         {
-            LogError("UDP TransformData送信エラー: " + e.Message);
+            LogError($"UDP TransformData[{index}]送信エラー: " + e.Message);
+        }
+    }
+    
+    /// <summary>
+    /// UDP受信処理
+    /// </summary>
+    void ReceiveUdpMessages()
+    {
+        LogDebug("UDP受信スレッド開始");
+        while (running && udpConnected)
+        {
+            try
+            {
+                LogDebug("UDP受信待機中...");
+                // UDPデータを受信
+                var remoteEndPoint = new System.Net.IPEndPoint(System.Net.IPAddress.Any, 0);
+                byte[] receivedBytes = udpClient.Receive(ref remoteEndPoint);
+                LogDebug($"UDPデータ受信: {receivedBytes.Length} bytes from {remoteEndPoint}");
+                
+                // 受信データの詳細ログ
+                LogDebug($"受信データ詳細:");
+                LogDebug($"  バイト数: {receivedBytes.Length}");
+                LogDebug($"  送信元: {remoteEndPoint}");
+                LogDebug($"  データ内容: {BitConverter.ToString(receivedBytes)}");
+                
+                // ヘッダーを解析（最初の4バイト）
+                if (receivedBytes.Length >= 4)
+                {
+                    string header = System.Text.Encoding.ASCII.GetString(receivedBytes, 0, 4);
+                    LogDebug($"UDPヘッダー: '{header}'");
+                    
+                    if (header == "TRNS")
+                    {
+                        LogDebug($"TRNSヘッダー検出！データ処理開始");
+                        
+                        // ヘッダーを除いた部分を取得
+                        byte[] transformDataBytes = new byte[receivedBytes.Length - 4];
+                        Array.Copy(receivedBytes, 4, transformDataBytes, 0, transformDataBytes.Length);
+                        
+                        LogDebug($"TransformDataバイト数: {transformDataBytes.Length}");
+                        LogDebug($"TransformData内容: {BitConverter.ToString(transformDataBytes)}");
+                        
+                        // TransformDataをデシリアライズ
+                        var reader = new MessagePackReader(transformDataBytes);
+                        var options = MessagePackSerializerOptions.Standard;
+                        var formatter = new TransformDataFormatter();
+                        var transformData = formatter.Deserialize(ref reader, options);
+                        
+                        LogDebug($"デシリアライズ成功: userId={transformData.userId}, sessionId={transformData.sessionId}");
+                        
+                        // 自分のデータは無視（テスト用オプションで制御）
+                        if (transformData.userId == userId && !allowOwnData)
+                        {
+                            LogDebug($"自分のデータのため無視: {transformData.userId} == {userId}");
+                            continue;
+                        }
+                        
+                        LogDebug($"UDP TransformData受信: {transformData.userId} from {remoteEndPoint}");
+                        LogDebug($"  Position: {transformData.position}");
+                        LogDebug($"  Rotation: {transformData.rotation}");
+                        LogDebug($"  Timestamp: {transformData.timestamp}");
+                        
+                        // TransformDataを保存
+                        receivedTransforms[transformData.userId] = transformData;
+                        LogDebug($"TransformData保存完了: {receivedTransforms.Count}個のTransformを保持");
+                        
+                        // スムージング用の目標値を設定
+                        targetPositions[transformData.userId] = transformData.position;
+                        targetRotations[transformData.userId] = transformData.rotation;
+                        LogDebug($"目標値設定完了: Position={targetPositions[transformData.userId]}, Rotation={targetRotations[transformData.userId]}");
+                        
+                        OnTransformReceived?.Invoke(transformData.userId, transformData);
+                        LogDebug($"OnTransformReceivedイベント発火完了");
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                if (running)
+                {
+                    LogError("UDP受信エラー: " + e.Message);
+                    LogError("UDP受信エラー詳細: " + e.StackTrace);
+                }
+                break;
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Transform同期処理
+    /// </summary>
+    void SyncTransforms()
+    {
+        if (syncTargets == null || syncTargets.Length == 0)
+        {
+            LogDebug("SyncTargetsが設定されていません");
+            return;
+        }
+        
+        if (targetPositions.Count == 0)
+        {
+            LogDebug("同期対象のTransformがありません");
+            return;
+        }
+        
+        LogDebug($"同期処理開始: {targetPositions.Count}個のTransformを同期");
+        
+        int targetIndex = 0;
+        foreach (var kvp in targetPositions)
+        {
+            string userId = kvp.Key;
+            Vector3 targetPos = kvp.Value;
+            Quaternion targetRot = targetRotations.ContainsKey(userId) ? targetRotations[userId] : Quaternion.identity;
+            
+            LogDebug($"同期処理: userId={userId}, targetIndex={targetIndex}, targetPos={targetPos}");
+            
+            if (targetIndex < syncTargets.Length && syncTargets[targetIndex] != null)
+            {
+                Transform targetTransform = syncTargets[targetIndex];
+                Vector3 oldPos = targetTransform.position;
+                Quaternion oldRot = targetTransform.rotation;
+                
+                // スムージング適用
+                if (smoothingFactor > 0)
+                {
+                    targetTransform.position = Vector3.Lerp(targetTransform.position, targetPos, smoothingFactor);
+                    targetTransform.rotation = Quaternion.Lerp(targetTransform.rotation, targetRot, smoothingFactor);
+                }
+                else
+                {
+                    targetTransform.position = targetPos;
+                    targetTransform.rotation = targetRot;
+                }
+                
+                LogDebug($"Transform同期完了: {targetTransform.name} {oldPos} -> {targetTransform.position}");
+                targetIndex++;
+            }
+            else
+            {
+                LogDebug($"同期対象がありません: targetIndex={targetIndex}, syncTargets.Length={syncTargets.Length}");
+            }
         }
     }
     
@@ -365,7 +619,7 @@ public class XRSharingClient : MonoBehaviour
     {
         if (enableDebugLogs)
         {
-            Debug.Log("[XRSharingClient] " + message);
+//            Debug.Log("[XRSharingClient] " + message);
         }
     }
     

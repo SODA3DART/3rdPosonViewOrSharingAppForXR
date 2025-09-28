@@ -52,7 +52,9 @@ public class SimpleServer : MonoBehaviour
     // クライアント管理
     private Dictionary<string, TcpClient> connectedClientsDict = new Dictionary<string, TcpClient>();
     private Dictionary<string, NetworkStream> clientStreams = new Dictionary<string, NetworkStream>();
+    private Dictionary<string, IPEndPoint> clientUdpEndpoints = new Dictionary<string, IPEndPoint>();
     private int nextUserId = 1;
+    private readonly object udpEndpointsLock = new object();
     
     void Start()
     {
@@ -124,6 +126,7 @@ public class SimpleServer : MonoBehaviour
             // UDPサーバースレッド開始
             udpServerThread = new Thread(UdpServerLoop);
             udpServerThread.Start();
+            Debug.Log("UDPサーバースレッド開始完了");
         }
         catch (Exception e)
         {
@@ -146,6 +149,12 @@ public class SimpleServer : MonoBehaviour
         }
         connectedClientsDict.Clear();
         clientStreams.Clear();
+        
+        // UDPエンドポイントもクリア
+        lock (udpEndpointsLock)
+        {
+            clientUdpEndpoints.Clear();
+        }
         
         // TCPサーバー停止
         if (server != null)
@@ -349,6 +358,14 @@ public class SimpleServer : MonoBehaviour
             connectedClientsDict.Remove(userId);
             clientStreams.Remove(userId);
             client.Close();
+            
+            // UDPエンドポイントも削除
+            lock (udpEndpointsLock)
+            {
+                clientUdpEndpoints.Remove(userId);
+                Debug.Log($"UDPエンドポイント削除: {userId}");
+            }
+            
             Debug.Log("クライアント切断 [" + userId + "]");
         }
     }
@@ -394,29 +411,48 @@ public class SimpleServer : MonoBehaviour
     /// </summary>
     void UdpServerLoop()
     {
+        Debug.Log("UDPサーバーループ開始");
+        Debug.Log($"UDPサーバー状態: udpRunning={udpRunning}, udpServer={udpServer != null}");
         IPEndPoint remoteEndPoint = new IPEndPoint(IPAddress.Any, 0);
         
         while (udpRunning)
         {
             try
             {
+                Debug.Log("UDP受信待機中...");
                 // UDPデータを受信
                 byte[] receivedBytes = udpServer.Receive(ref remoteEndPoint);
+                Debug.Log($"UDPデータ受信: {receivedBytes.Length} bytes from {remoteEndPoint}");
                 
                 // ヘッダーを解析（最初の4バイト）
                 if (receivedBytes.Length >= 4)
                 {
                     string header = System.Text.Encoding.ASCII.GetString(receivedBytes, 0, 4);
+                    Debug.Log($"UDPヘッダー: '{header}'");
                     
                     if (header == "TRNS")
                     {
+                        // ヘッダーを除いた部分を取得
+                        byte[] transformDataBytes = new byte[receivedBytes.Length - 4];
+                        Array.Copy(receivedBytes, 4, transformDataBytes, 0, transformDataBytes.Length);
+                        
                         // TransformDataをデシリアライズ
-                        var reader = new MessagePackReader(receivedBytes);
+                        var reader = new MessagePackReader(transformDataBytes);
                         var options = MessagePackSerializerOptions.Standard;
                         var formatter = new TransformDataFormatter();
                         var transformData = formatter.Deserialize(ref reader, options);
                         
                         Debug.Log("UDP受信 [" + transformData.userId + "]: TransformData from " + remoteEndPoint);
+                        Debug.Log("  Position: " + transformData.position);
+                        Debug.Log("  Rotation: " + transformData.rotation);
+                        Debug.Log("  Timestamp: " + transformData.timestamp);
+                        
+                        // クライアントのUDPエンドポイントを学習・保存
+                        lock (udpEndpointsLock)
+                        {
+                            clientUdpEndpoints[transformData.userId] = remoteEndPoint;
+                            Debug.Log($"UDPエンドポイント保存: {transformData.userId} -> {remoteEndPoint}");
+                        }
                         
                         // 他のクライアントにUDPデータを転送
                         ForwardUdpDataToOtherClients(receivedBytes, transformData.userId);
@@ -428,6 +464,7 @@ public class SimpleServer : MonoBehaviour
                 if (udpRunning)
                 {
                     Debug.LogError("UDPサーバーループエラー: " + e.Message);
+                    Debug.LogError("UDPサーバーループエラー詳細: " + e.StackTrace);
                 }
                 break;
             }
@@ -439,9 +476,36 @@ public class SimpleServer : MonoBehaviour
     /// </summary>
     void ForwardUdpDataToOtherClients(byte[] data, string fromUserId)
     {
-        // UDPデータの転送は、クライアント側で直接送信する方式を採用
-        // サーバーは中継のみ行う
-        Debug.Log("UDPデータ転送準備: " + fromUserId);
+        lock (udpEndpointsLock)
+        {
+            Debug.Log("UDPデータ転送開始: " + fromUserId + " -> " + clientUdpEndpoints.Count + "クライアント");
+            
+            // 保存されているUDPエンドポイントに転送
+            foreach (var kvp in clientUdpEndpoints)
+            {
+                string clientUserId = kvp.Key;
+                IPEndPoint clientUdpEndpoint = kvp.Value;
+                
+                // 送信者自身には転送しない
+                if (clientUserId == fromUserId)
+                {
+                    continue;
+                }
+                
+                try
+                {
+                    Debug.Log($"UDP転送試行: {fromUserId} -> {clientUserId} ({clientUdpEndpoint})");
+                    
+                    // サーバーのUDPソケットを使用して転送
+                    udpServer.Send(data, data.Length, clientUdpEndpoint);
+                    Debug.Log("UDPデータ転送成功: " + fromUserId + " -> " + clientUserId + " (" + clientUdpEndpoint + ")");
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError("UDPデータ転送エラー: " + clientUserId + " - " + e.Message);
+                }
+            }
+        }
     }
     
     void OnDestroy()
