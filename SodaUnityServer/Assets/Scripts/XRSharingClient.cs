@@ -88,6 +88,26 @@ public class XRSharingClient : MonoBehaviour
         }
     }
     
+    /// <summary>
+    /// ユーザーIDからユーザーインデックスを取得（簡易実装）
+    /// </summary>
+    private int GetUserIndex(string userId)
+    {
+        if (string.IsNullOrEmpty(userId)) return 0;
+        
+        // user_1 -> 0, user_2 -> 1, user_3 -> 2 の形式を想定
+        if (userId.StartsWith("user_"))
+        {
+            if (int.TryParse(userId.Substring(5), out int userNum))
+            {
+                return userNum - 1; // user_1 -> 0, user_2 -> 1
+            }
+        }
+        
+        // デフォルトは0
+        return 0;
+    }
+    
     void Update()
     {
         if (isConnected)
@@ -442,7 +462,9 @@ public class XRSharingClient : MonoBehaviour
                 sessionId = sessionId ?? "unknown_session",
                 position = transform.position,
                 rotation = transform.rotation,
-                timestamp = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                timestamp = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                userIndex = GetUserIndex(userId), // 新フィールド
+                objectIndex = index // 新フィールド
             };
             
             // サンプルと同じ方式でシリアライズ
@@ -555,7 +577,7 @@ public class XRSharingClient : MonoBehaviour
     }
     
     /// <summary>
-    /// Transform同期処理
+    /// Transform同期処理（既存ロジック + objectIndexベースの新ロジック）
     /// </summary>
     void SyncTransforms()
     {
@@ -573,39 +595,78 @@ public class XRSharingClient : MonoBehaviour
         
         LogDebug($"同期処理開始: {targetPositions.Count}個のTransformを同期");
         
-        int targetIndex = 0;
-        foreach (var kvp in targetPositions)
+        // 新ロジック: objectIndexベースの同期（優先）
+        bool usedNewLogic = false;
+        foreach (var kvp in receivedTransforms)
         {
             string userId = kvp.Key;
-            Vector3 targetPos = kvp.Value;
-            Quaternion targetRot = targetRotations.ContainsKey(userId) ? targetRotations[userId] : Quaternion.identity;
+            var transformData = kvp.Value;
             
-            LogDebug($"同期処理: userId={userId}, targetIndex={targetIndex}, targetPos={targetPos}");
-            
-            if (targetIndex < syncTargets.Length && syncTargets[targetIndex] != null)
+            // objectIndexが有効な場合、新ロジックを使用
+            if (transformData.objectIndex >= 0 && transformData.objectIndex < syncTargets.Length)
             {
-                Transform targetTransform = syncTargets[targetIndex];
-                Vector3 oldPos = targetTransform.position;
-                Quaternion oldRot = targetTransform.rotation;
-                
-                // スムージング適用
-                if (smoothingFactor > 0)
+                if (syncTargets[transformData.objectIndex] != null)
                 {
-                    targetTransform.position = Vector3.Lerp(targetTransform.position, targetPos, smoothingFactor);
-                    targetTransform.rotation = Quaternion.Lerp(targetTransform.rotation, targetRot, smoothingFactor);
+                    Transform targetTransform = syncTargets[transformData.objectIndex];
+                    Vector3 oldPos = targetTransform.position;
+                    Quaternion oldRot = targetTransform.rotation;
+                    
+                    // スムージング適用
+                    if (smoothingFactor > 0)
+                    {
+                        targetTransform.position = Vector3.Lerp(targetTransform.position, transformData.position, smoothingFactor);
+                        targetTransform.rotation = Quaternion.Lerp(targetTransform.rotation, transformData.rotation, smoothingFactor);
+                    }
+                    else
+                    {
+                        targetTransform.position = transformData.position;
+                        targetTransform.rotation = transformData.rotation;
+                    }
+                    
+                    LogDebug($"新ロジック同期完了: {targetTransform.name} (objectIndex={transformData.objectIndex}) {oldPos} -> {targetTransform.position}");
+                    usedNewLogic = true;
+                }
+            }
+        }
+        
+        // 既存ロジック: userIdベースの同期（フォールバック）
+        if (!usedNewLogic)
+        {
+            LogDebug("新ロジックが使用できないため、既存ロジックを使用");
+            int targetIndex = 0;
+            foreach (var kvp in targetPositions)
+            {
+                string userId = kvp.Key;
+                Vector3 targetPos = kvp.Value;
+                Quaternion targetRot = targetRotations.ContainsKey(userId) ? targetRotations[userId] : Quaternion.identity;
+                
+                LogDebug($"既存ロジック同期: userId={userId}, targetIndex={targetIndex}, targetPos={targetPos}");
+                
+                if (targetIndex < syncTargets.Length && syncTargets[targetIndex] != null)
+                {
+                    Transform targetTransform = syncTargets[targetIndex];
+                    Vector3 oldPos = targetTransform.position;
+                    Quaternion oldRot = targetTransform.rotation;
+                    
+                    // スムージング適用
+                    if (smoothingFactor > 0)
+                    {
+                        targetTransform.position = Vector3.Lerp(targetTransform.position, targetPos, smoothingFactor);
+                        targetTransform.rotation = Quaternion.Lerp(targetTransform.rotation, targetRot, smoothingFactor);
+                    }
+                    else
+                    {
+                        targetTransform.position = targetPos;
+                        targetTransform.rotation = targetRot;
+                    }
+                    
+                    LogDebug($"既存ロジック同期完了: {targetTransform.name} {oldPos} -> {targetTransform.position}");
+                    targetIndex++;
                 }
                 else
                 {
-                    targetTransform.position = targetPos;
-                    targetTransform.rotation = targetRot;
+                    LogDebug($"同期対象がありません: targetIndex={targetIndex}, syncTargets.Length={syncTargets.Length}");
                 }
-                
-                LogDebug($"Transform同期完了: {targetTransform.name} {oldPos} -> {targetTransform.position}");
-                targetIndex++;
-            }
-            else
-            {
-                LogDebug($"同期対象がありません: targetIndex={targetIndex}, syncTargets.Length={syncTargets.Length}");
             }
         }
     }

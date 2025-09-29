@@ -80,6 +80,12 @@ namespace XRSharing
         
         [Key(5)]
         public long timestamp;
+        
+        [Key(6)]
+        public int userIndex = 0; // ユーザーのインデックス（0,1,2,3,4...）
+        
+        [Key(7)]
+        public int objectIndex = 0; // 送信元Transform配列のインデックス
     }
     
     /// <summary>
@@ -242,7 +248,9 @@ namespace XRSharing
         public TransformData Deserialize(ref MessagePackReader reader, MessagePackSerializerOptions options)
         {
             var arrayLength = reader.ReadArrayHeader();
-            if (arrayLength != 11) throw new MessagePackSerializationException("Invalid array length for TransformData");
+            // 後方互換性のため、8要素（旧）と10要素（新）の両方に対応
+            if (arrayLength != 8 && arrayLength != 10) 
+                throw new MessagePackSerializationException($"Invalid array length for TransformData: {arrayLength}");
 
             var header = reader.ReadString() ?? "TRNS";
             var userId = reader.ReadString() ?? "";
@@ -257,6 +265,15 @@ namespace XRSharing
             var rotationZ = reader.ReadSingle();
             var rotationW = reader.ReadSingle();
             var timestamp = reader.ReadInt64();
+            
+            // 新フィールド（後方互換性のためデフォルト値）
+            var userIndex = 0;
+            var objectIndex = 0;
+            if (arrayLength >= 10)
+            {
+                userIndex = reader.ReadInt32();
+                objectIndex = reader.ReadInt32();
+            }
 
             return new TransformData
             {
@@ -265,13 +282,15 @@ namespace XRSharing
                 sessionId = sessionId,
                 position = new UnityEngine.Vector3(positionX, positionY, positionZ),
                 rotation = new UnityEngine.Quaternion(rotationX, rotationY, rotationZ, rotationW),
-                timestamp = timestamp
+                timestamp = timestamp,
+                userIndex = userIndex,
+                objectIndex = objectIndex
             };
         }
 
         public void Serialize(ref MessagePackWriter writer, TransformData value, MessagePackSerializerOptions options)
         {
-            writer.WriteArrayHeader(11);
+            writer.WriteArrayHeader(10); // 新バージョンは10要素
             writer.Write(value.header ?? "TRNS");
             writer.Write(value.userId ?? "");
             writer.Write(value.sessionId ?? "");
@@ -285,6 +304,10 @@ namespace XRSharing
             writer.Write(value.rotation.z);
             writer.Write(value.rotation.w);
             writer.Write(value.timestamp);
+            
+            // 新フィールド
+            writer.Write(value.userIndex);
+            writer.Write(value.objectIndex);
         }
     }
 
