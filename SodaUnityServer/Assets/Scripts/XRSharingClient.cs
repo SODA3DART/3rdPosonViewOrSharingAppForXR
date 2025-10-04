@@ -80,6 +80,10 @@ public class XRSharingClient : MonoBehaviour
     public System.Action OnDisconnected;
     public System.Action<string> OnError;
     
+    // イベントシステム用
+    public System.Action<string, string, string> OnEventReceived; // (eventType, eventData, fromUserId)
+    public UnityEngine.Events.UnityEvent<string, string> OnCustomEvent; // (eventType, eventData) - Inspectorで設定可能
+    
     void Start()
     {
         if (autoConnect)
@@ -172,6 +176,23 @@ public class XRSharingClient : MonoBehaviour
             }
             
             GUILayout.Space(10);
+            GUILayout.Label("=== イベント送信テスト ===");
+            if (GUILayout.Button("テストイベント送信"))
+            {
+                SendEvent("TEST_EVENT", "{\"message\":\"Hello from client!\"}");
+            }
+            
+            if (GUILayout.Button("ボタンクリックイベント送信"))
+            {
+                SendEvent("BUTTON_CLICK", "{\"buttonName\":\"ClientButton\",\"position\":\"right\"}");
+            }
+            
+            if (GUILayout.Button("オブジェクト選択イベント送信"))
+            {
+                SendEvent("OBJECT_SELECTED", "{\"objectName\":\"ClientObject\",\"objectId\":456}");
+            }
+            
+            GUILayout.Space(10);
             GUILayout.Label("=== UDP Transform送信テスト ===");
             if (GUILayout.Button("Transform送信"))
             {
@@ -234,7 +255,17 @@ public class XRSharingClient : MonoBehaviour
         {
             LogError("接続エラー: " + e.Message);
             LogError("接続先: " + serverURL);
-            OnError?.Invoke("接続エラー: " + e.Message);
+            // メインスレッドでエラーイベントを発火
+            if (UnityMainThreadDispatcher.Exists())
+            {
+                UnityMainThreadDispatcher.Instance().Enqueue(() => {
+                    OnError?.Invoke("接続エラー: " + e.Message);
+                });
+            }
+            else
+            {
+                OnError?.Invoke("接続エラー: " + e.Message);
+            }
         }
     }
     
@@ -315,7 +346,74 @@ public class XRSharingClient : MonoBehaviour
         {
             LogError("送信エラー: " + e.Message);
             LogError("Exception details: " + e.ToString());
-            OnError?.Invoke("送信エラー: " + e.Message);
+            // メインスレッドでエラーイベントを発火
+            if (UnityMainThreadDispatcher.Exists())
+            {
+                UnityMainThreadDispatcher.Instance().Enqueue(() => {
+                    OnError?.Invoke("送信エラー: " + e.Message);
+                });
+            }
+            else
+            {
+                OnError?.Invoke("送信エラー: " + e.Message);
+            }
+        }
+    }
+    
+    /// <summary>
+    /// イベントを送信
+    /// </summary>
+    public void SendEvent(string eventType, string eventData, string targetSessionId = "", string targetUserId = "")
+    {
+        if (!isConnected || stream == null)
+        {
+            LogError("サーバーに接続されていません");
+            return;
+        }
+        
+        try
+        {
+            string currentUserId = string.IsNullOrEmpty(userId) ? "unknown_user" : userId;
+            string currentSessionId = string.IsNullOrEmpty(sessionId) ? "unknown_session" : sessionId;
+            
+            var eventMessage = new XRSharing.EventData
+            {
+                header = "EVNT",
+                eventType = eventType,
+                eventData = eventData,
+                fromUserId = currentUserId,
+                targetSessionId = targetSessionId,
+                targetUserId = targetUserId,
+                timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                sessionId = currentSessionId
+            };
+            
+            LogDebug($"イベント送信: {eventType} -> セッション:{targetSessionId}, ユーザー:{targetUserId}");
+            
+            // サンプルと同じ方式でシリアライズ
+            var options = MessagePackSerializerOptions.Standard.WithResolver(CompositeResolver.Create(
+                new IMessagePackFormatter[] { new EventDataFormatter() },
+                new IFormatterResolver[] { EventDataResolver.Instance }
+            ));
+            byte[] data = MessagePackSerializer.Serialize(eventMessage, options);
+            stream.Write(data, 0, data.Length);
+            
+            LogDebug("イベント送信完了: " + eventType);
+        }
+        catch (Exception e)
+        {
+            LogError("イベント送信エラー: " + e.Message);
+            // メインスレッドでエラーイベントを発火
+            if (UnityMainThreadDispatcher.Exists())
+            {
+                UnityMainThreadDispatcher.Instance().Enqueue(() => {
+                    OnError?.Invoke("イベント送信エラー: " + e.Message);
+                });
+            }
+            else
+            {
+                OnError?.Invoke("イベント送信エラー: " + e.Message);
+            }
         }
     }
     
@@ -333,28 +431,77 @@ public class XRSharingClient : MonoBehaviour
                     byte[] actualData = new byte[bytesRead];
                     Array.Copy(buffer, 0, actualData, 0, bytesRead);
                     
-                    // サンプルと同じ方式でデシリアライズ
-                    var reader = new MessagePackReader(actualData);
-                    var deserializeOptions = MessagePackSerializerOptions.Standard;
-                    var formatter = new ServerResponseFormatter();
-                    var response = formatter.Deserialize(ref reader, deserializeOptions);
-                    
-                    // セッションIDとUserIDを設定（初回受信時）
-                    if (string.IsNullOrEmpty(sessionId) && !string.IsNullOrEmpty(response.sessionId))
+                    // データタイプを判定して適切にデシリアライズ
+                    try
                     {
-                        sessionId = response.sessionId;
-                        LogDebug("セッションID設定: " + sessionId);
+                        // まずServerResponseとして試行
+                        var reader = new MessagePackReader(actualData);
+                        var deserializeOptions = MessagePackSerializerOptions.Standard;
+                        var formatter = new ServerResponseFormatter();
+                        var response = formatter.Deserialize(ref reader, deserializeOptions);
+                        
+                        // セッションIDとUserIDを設定（初回受信時）
+                        if (string.IsNullOrEmpty(sessionId) && !string.IsNullOrEmpty(response.sessionId))
+                        {
+                            sessionId = response.sessionId;
+                            LogDebug("セッションID設定: " + sessionId);
+                        }
+                        if (string.IsNullOrEmpty(userId) && !string.IsNullOrEmpty(response.fromUserId))
+                        {
+                            userId = response.fromUserId;
+                            LogDebug("UserID設定: " + userId);
+                        }
+                        
+                        LogDebug("受信: " + response.message + " (from: " + response.fromUserId + ")");
+                        
+                        // メインスレッドでメッセージ受信イベントを発火
+                        if (UnityMainThreadDispatcher.Exists())
+                        {
+                            UnityMainThreadDispatcher.Instance().Enqueue(() => {
+                                OnMessageReceived?.Invoke(response.message, response.fromUserId);
+                            });
+                        }
+                        else
+                        {
+                            // フォールバック: 直接実行
+                            OnMessageReceived?.Invoke(response.message, response.fromUserId);
+                        }
                     }
-                    if (string.IsNullOrEmpty(userId) && !string.IsNullOrEmpty(response.fromUserId))
+                    catch (Exception responseError)
                     {
-                        userId = response.fromUserId;
-                        LogDebug("UserID設定: " + userId);
+                        // ServerResponseで失敗した場合、EventDataとして試行
+                        try
+                        {
+                            var reader = new MessagePackReader(actualData);
+                            var deserializeOptions = MessagePackSerializerOptions.Standard;
+                            var eventFormatter = new EventDataFormatter();
+                            var eventData = eventFormatter.Deserialize(ref reader, deserializeOptions);
+                            
+                            LogDebug($"イベント受信: {eventData.eventType} (from: {eventData.fromUserId})");
+                            
+                            // メインスレッドでイベントを発火
+                            if (UnityMainThreadDispatcher.Exists())
+                            {
+                                UnityMainThreadDispatcher.Instance().Enqueue(() => {
+                                    // イベント受信イベント
+                                    OnEventReceived?.Invoke(eventData.eventType, eventData.eventData, eventData.fromUserId);
+                                    
+                                    // UnityEventも発火
+                                    OnCustomEvent?.Invoke(eventData.eventType, eventData.eventData);
+                                });
+                            }
+                            else
+                            {
+                                // フォールバック: 直接実行
+                                OnEventReceived?.Invoke(eventData.eventType, eventData.eventData, eventData.fromUserId);
+                                OnCustomEvent?.Invoke(eventData.eventType, eventData.eventData);
+                            }
+                        }
+                        catch (Exception eventError)
+                        {
+                            LogError("データデシリアライズエラー: " + eventError.Message);
+                        }
                     }
-                    
-                    LogDebug("受信: " + response.message + " (from: " + response.fromUserId + ")");
-                    
-                    // サンプルと同じようにシンプルに
-                    OnMessageReceived?.Invoke(response.message, response.fromUserId);
                 }
             }
             catch (Exception e)
@@ -362,7 +509,17 @@ public class XRSharingClient : MonoBehaviour
                 if (running)
                 {
                     LogError("受信エラー: " + e.Message);
-                    OnError?.Invoke("受信エラー: " + e.Message);
+                    // メインスレッドでエラーイベントを発火
+                    if (UnityMainThreadDispatcher.Exists())
+                    {
+                        UnityMainThreadDispatcher.Instance().Enqueue(() => {
+                            OnError?.Invoke("受信エラー: " + e.Message);
+                        });
+                    }
+                    else
+                    {
+                        OnError?.Invoke("受信エラー: " + e.Message);
+                    }
                 }
                 break;
             }
@@ -559,8 +716,20 @@ public class XRSharingClient : MonoBehaviour
                         targetRotations[transformData.userId] = transformData.rotation;
                         LogDebug($"目標値設定完了: Position={targetPositions[transformData.userId]}, Rotation={targetRotations[transformData.userId]}");
                         
-                        OnTransformReceived?.Invoke(transformData.userId, transformData);
-                        LogDebug($"OnTransformReceivedイベント発火完了");
+                        // メインスレッドでTransform受信イベントを発火
+                        if (UnityMainThreadDispatcher.Exists())
+                        {
+                            UnityMainThreadDispatcher.Instance().Enqueue(() => {
+                                OnTransformReceived?.Invoke(transformData.userId, transformData);
+                                LogDebug($"OnTransformReceivedイベント発火完了");
+                            });
+                        }
+                        else
+                        {
+                            // フォールバック: 直接実行
+                            OnTransformReceived?.Invoke(transformData.userId, transformData);
+                            LogDebug($"OnTransformReceivedイベント発火完了");
+                        }
                     }
                 }
             }
@@ -570,6 +739,17 @@ public class XRSharingClient : MonoBehaviour
                 {
                     LogError("UDP受信エラー: " + e.Message);
                     LogError("UDP受信エラー詳細: " + e.StackTrace);
+                    // メインスレッドでエラーイベントを発火
+                    if (UnityMainThreadDispatcher.Exists())
+                    {
+                        UnityMainThreadDispatcher.Instance().Enqueue(() => {
+                            OnError?.Invoke("UDP受信エラー: " + e.Message);
+                        });
+                    }
+                    else
+                    {
+                        OnError?.Invoke("UDP受信エラー: " + e.Message);
+                    }
                 }
                 break;
             }
@@ -686,7 +866,18 @@ public class XRSharingClient : MonoBehaviour
     
     void LogError(string message)
     {
-        Debug.LogError("[XRSharingClient] " + message);
+        // メインスレッドで実行するようにキューに追加
+        if (UnityMainThreadDispatcher.Exists())
+        {
+            UnityMainThreadDispatcher.Instance().Enqueue(() => {
+                Debug.LogError("[XRSharingClient] " + message);
+            });
+        }
+        else
+        {
+            // フォールバック: コンソールに直接出力
+            System.Console.WriteLine("[XRSharingClient] " + message);
+        }
     }
 }
 

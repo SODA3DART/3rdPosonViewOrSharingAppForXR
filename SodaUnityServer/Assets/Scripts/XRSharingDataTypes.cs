@@ -137,6 +137,37 @@ namespace XRSharing
         [Key(5)]
         public string userId;
     }
+    
+    /// <summary>
+    /// イベントデータ（TCP通信用）
+    /// </summary>
+    [MessagePackObject]
+    public class EventData
+    {
+        [Key(0)]
+        public string header = "EVNT"; // イベント識別用ヘッダー
+        
+        [Key(1)]
+        public string eventType = ""; // イベントタイプ（例: "BUTTON_CLICK", "OBJECT_SELECTED"）
+        
+        [Key(2)]
+        public string eventData = ""; // イベントデータ（JSON文字列など）
+        
+        [Key(3)]
+        public string fromUserId = ""; // 送信者ID
+        
+        [Key(4)]
+        public string targetSessionId = ""; // 対象セッションID（空の場合は全セッション）
+        
+        [Key(5)]
+        public string targetUserId = ""; // 対象ユーザーID（空の場合は全ユーザー）
+        
+        [Key(6)]
+        public long timestamp = 0; // タイムスタンプ
+        
+        [Key(7)]
+        public string sessionId = ""; // 送信者のセッションID
+    }
 
     /// <summary>
     /// ServerRequest用カスタムフォーマッター
@@ -323,6 +354,69 @@ namespace XRSharing
             if (typeof(T) == typeof(TransformData))
             {
                 return (IMessagePackFormatter<T>)new TransformDataFormatter();
+            }
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// EventData用カスタムフォーマッター
+    /// </summary>
+    public class EventDataFormatter : IMessagePackFormatter<EventData>
+    {
+        public EventData Deserialize(ref MessagePackReader reader, MessagePackSerializerOptions options)
+        {
+            var arrayLength = reader.ReadArrayHeader();
+            if (arrayLength != 8) throw new MessagePackSerializationException("Invalid array length for EventData");
+
+            var header = reader.ReadString() ?? "EVNT";
+            var eventType = reader.ReadString() ?? "";
+            var eventData = reader.ReadString() ?? "";
+            var fromUserId = reader.ReadString() ?? "";
+            var targetSessionId = reader.ReadString() ?? "";
+            var targetUserId = reader.ReadString() ?? "";
+            var timestamp = reader.ReadInt64();
+            var sessionId = reader.ReadString() ?? "";
+
+            return new EventData
+            {
+                header = header,
+                eventType = eventType,
+                eventData = eventData,
+                fromUserId = fromUserId,
+                targetSessionId = targetSessionId,
+                targetUserId = targetUserId,
+                timestamp = timestamp,
+                sessionId = sessionId
+            };
+        }
+
+        public void Serialize(ref MessagePackWriter writer, EventData value, MessagePackSerializerOptions options)
+        {
+            writer.WriteArrayHeader(8);
+            writer.Write(value.header ?? "EVNT");
+            writer.Write(value.eventType ?? "");
+            writer.Write(value.eventData ?? "");
+            writer.Write(value.fromUserId ?? "");
+            writer.Write(value.targetSessionId ?? "");
+            writer.Write(value.targetUserId ?? "");
+            writer.Write(value.timestamp);
+            writer.Write(value.sessionId ?? "");
+        }
+    }
+
+    /// <summary>
+    /// EventData用リゾルバ
+    /// </summary>
+    public class EventDataResolver : IFormatterResolver
+    {
+        public static readonly EventDataResolver Instance = new EventDataResolver();
+
+        public IMessagePackFormatter<T> GetFormatter<T>()
+        {
+            if (typeof(T) == typeof(EventData))
+            {
+                return (IMessagePackFormatter<T>)new EventDataFormatter();
             }
             return null;
         }

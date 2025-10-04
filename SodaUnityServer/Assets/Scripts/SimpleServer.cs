@@ -55,7 +55,9 @@ public class SimpleServer : MonoBehaviour
     private Dictionary<string, IPEndPoint> clientUdpEndpoints = new Dictionary<string, IPEndPoint>();
     private int nextUserId = 1;
     private readonly object udpEndpointsLock = new object();
-    
+
+    //受信ログを出すか出さないか
+    [Header("Debug")] private bool _ShowLog = false;
     void Start()
     {
         if (autoStart)
@@ -66,7 +68,7 @@ public class SimpleServer : MonoBehaviour
     
     void OnGUI()
     {
-        GUILayout.BeginArea(new Rect(10, 10, 300, 200));
+        GUILayout.BeginArea(new Rect(10, 10, 300, 400));
         
         GUILayout.Label("Simple Server", GUI.skin.box);
         
@@ -88,6 +90,27 @@ public class SimpleServer : MonoBehaviour
         GUILayout.Label("セッション生成: " + (autoGenerateSessionId ? "自動" : "固定"));
         GUILayout.Label("ngrok使用: " + (useNgrok ? "はい" : "いいえ"));
         GUILayout.Label("接続クライアント数: " + connectedClients);
+        
+        GUILayout.Space(10);
+        GUILayout.Label("=== イベント送信 ===", GUI.skin.box);
+        
+        if (isRunning)
+        {
+            if (GUILayout.Button("テストイベント送信（全クライアント）"))
+            {
+                SendEventToClients("TEST_EVENT", "{\"message\":\"Hello from server!\"}");
+            }
+            
+            if (GUILayout.Button("ボタンクリックイベント送信"))
+            {
+                SendEventToClients("BUTTON_CLICK", "{\"buttonName\":\"TestButton\",\"position\":\"center\"}");
+            }
+            
+            if (GUILayout.Button("オブジェクト選択イベント送信"))
+            {
+                SendEventToClients("OBJECT_SELECTED", "{\"objectName\":\"Cube\",\"objectId\":123}");
+            }
+        }
         
         GUILayout.EndArea();
     }
@@ -219,6 +242,66 @@ public class SimpleServer : MonoBehaviour
                 {
                     Debug.LogError("メッセージ転送エラー [" + targetUserId + "]: " + e.Message);
                 }
+            }
+        }
+    }
+    
+    /// <summary>
+    /// イベントを特定のクライアントに送信
+    /// </summary>
+    public void SendEventToClients(string eventType, string eventData, string targetSessionId = "", string targetUserId = "")
+    {
+        if (!isRunning)
+        {
+            Debug.LogError("サーバーが起動していません");
+            return;
+        }
+        
+        var eventMessage = new XRSharing.EventData
+        {
+            header = "EVNT",
+            eventType = eventType,
+            eventData = eventData,
+            fromUserId = "server",
+            targetSessionId = targetSessionId,
+            targetUserId = targetUserId,
+            timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            sessionId = currentSessionId
+        };
+        
+        Debug.Log($"イベント送信: {eventType} -> セッション:{targetSessionId}, ユーザー:{targetUserId}");
+        
+        // 対象クライアントに送信
+        foreach (var kvp in clientStreams)
+        {
+            string clientUserId = kvp.Key;
+            NetworkStream clientStream = kvp.Value;
+            
+            // セッションIDフィルタリング
+            if (!string.IsNullOrEmpty(targetSessionId) && currentSessionId != targetSessionId)
+            {
+                continue;
+            }
+            
+            // ユーザーIDフィルタリング
+            if (!string.IsNullOrEmpty(targetUserId) && clientUserId != targetUserId)
+            {
+                continue;
+            }
+            
+            try
+            {
+                var options = MessagePackSerializerOptions.Standard.WithResolver(CompositeResolver.Create(
+                    new IMessagePackFormatter[] { new EventDataFormatter() },
+                    new IFormatterResolver[] { EventDataResolver.Instance }
+                ));
+                byte[] eventDataBytes = MessagePackSerializer.Serialize(eventMessage, options);
+                clientStream.Write(eventDataBytes, 0, eventDataBytes.Length);
+                Debug.Log($"イベント送信成功 [{clientUserId}]: {eventType}");
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"イベント送信エラー [{clientUserId}]: {e.Message}");
             }
         }
     }
@@ -419,16 +502,19 @@ public class SimpleServer : MonoBehaviour
         {
             try
             {
-                Debug.Log("UDP受信待機中...");
+                if (_ShowLog)
+                 Debug.Log("UDP受信待機中...");
                 // UDPデータを受信
                 byte[] receivedBytes = udpServer.Receive(ref remoteEndPoint);
-                Debug.Log($"UDPデータ受信: {receivedBytes.Length} bytes from {remoteEndPoint}");
+                if (_ShowLog)
+                 Debug.Log($"UDPデータ受信: {receivedBytes.Length} bytes from {remoteEndPoint}");
                 
                 // ヘッダーを解析（最初の4バイト）
                 if (receivedBytes.Length >= 4)
                 {
                     string header = System.Text.Encoding.ASCII.GetString(receivedBytes, 0, 4);
-                    Debug.Log($"UDPヘッダー: '{header}'");
+                    if (_ShowLog)
+                     Debug.Log($"UDPヘッダー: '{header}'");
                     
                     if (header == "TRNS")
                     {
@@ -441,17 +527,22 @@ public class SimpleServer : MonoBehaviour
                         var options = MessagePackSerializerOptions.Standard;
                         var formatter = new TransformDataFormatter();
                         var transformData = formatter.Deserialize(ref reader, options);
-                        
-                        Debug.Log("UDP受信 [" + transformData.userId + "]: TransformData from " + remoteEndPoint);
-                        Debug.Log("  Position: " + transformData.position);
-                        Debug.Log("  Rotation: " + transformData.rotation);
-                        Debug.Log("  Timestamp: " + transformData.timestamp);
-                        
+
+                        if (_ShowLog)
+                        {
+                         
+                            Debug.Log("UDP受信 [" + transformData.userId + "]: TransformData from " + remoteEndPoint);
+                            Debug.Log("  Position: " + transformData.position);
+                            Debug.Log("  Rotation: " + transformData.rotation);
+                            Debug.Log("  Timestamp: " + transformData.timestamp);
+
+                        }
                         // クライアントのUDPエンドポイントを学習・保存
                         lock (udpEndpointsLock)
                         {
                             clientUdpEndpoints[transformData.userId] = remoteEndPoint;
-                            Debug.Log($"UDPエンドポイント保存: {transformData.userId} -> {remoteEndPoint}");
+                            if (_ShowLog)
+                                Debug.Log($"UDPエンドポイント保存: {transformData.userId} -> {remoteEndPoint}");
                         }
                         
                         // 他のクライアントにUDPデータを転送
@@ -478,7 +569,8 @@ public class SimpleServer : MonoBehaviour
     {
         lock (udpEndpointsLock)
         {
-            Debug.Log("UDPデータ転送開始: " + fromUserId + " -> " + clientUdpEndpoints.Count + "クライアント");
+            if (_ShowLog)
+             Debug.Log("UDPデータ転送開始: " + fromUserId + " -> " + clientUdpEndpoints.Count + "クライアント");
             
             // 保存されているUDPエンドポイントに転送
             foreach (var kvp in clientUdpEndpoints)
@@ -494,11 +586,13 @@ public class SimpleServer : MonoBehaviour
                 
                 try
                 {
-                    Debug.Log($"UDP転送試行: {fromUserId} -> {clientUserId} ({clientUdpEndpoint})");
+                    if(_ShowLog)
+                     Debug.Log($"UDP転送試行: {fromUserId} -> {clientUserId} ({clientUdpEndpoint})");
                     
                     // サーバーのUDPソケットを使用して転送
                     udpServer.Send(data, data.Length, clientUdpEndpoint);
-                    Debug.Log("UDPデータ転送成功: " + fromUserId + " -> " + clientUserId + " (" + clientUdpEndpoint + ")");
+                    if(_ShowLog)
+                     Debug.Log("UDPデータ転送成功: " + fromUserId + " -> " + clientUserId + " (" + clientUdpEndpoint + ")");
                 }
                 catch (Exception e)
                 {
