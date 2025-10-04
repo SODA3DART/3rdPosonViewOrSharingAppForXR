@@ -1,17 +1,19 @@
-# SODA3dartShader
+# 3rdPosonViewOrSharingAppForXR
 
-Unity用のカスタムシェーダープロジェクトです。Universal Render Pipeline (URP) を使用したモダンなシェーダー開発環境を提供します。
+XR（拡張現実）アプリケーション向けのリアルタイム位置・姿勢共有システムです。TCP/UDP通信を使用して、複数のXRデバイス間でTransformデータとイベントを同期します。
 
 ## 📋 プロジェクト概要
 
-このプロジェクトは、Unity 2022.3 LTS以降で動作するカスタムシェーダーの開発・学習用プロジェクトです。URP（Universal Render Pipeline）を使用して、モバイルからPCまで幅広いプラットフォームに対応したシェーダーを作成できます。
+このプロジェクトは、Unity 2022.3 LTSで開発されたXRアプリケーション用のネットワーク共有システムです。複数のXRデバイス（Quest、iPad、Desktop等）間でリアルタイムに位置・姿勢データを共有し、インタラクティブなイベントシステムを提供します。
 
 ## 🚀 主な機能
 
-- **Universal Render Pipeline (URP) 対応**
-- **モバイル最適化されたシェーダー**
-- **カスタムシェーダータイプの実装**
-- **インタラクティブなシェーダー効果**
+- **リアルタイムTransform同期**: UDP通信による高頻度位置・姿勢データ共有
+- **TCPイベントシステム**: 特定のセッションIDやユーザーIDを指定したイベント送信
+- **マルチプラットフォーム対応**: Quest、iPad、Desktop、その他XRデバイス
+- **MessagePackシリアライゼーション**: 高速で効率的なデータ通信
+- **UnityEvent統合**: Inspectorで設定可能なイベントシステム
+- **デバッグツール**: リアルタイム通信状況の監視・デバッグ
 
 ## 🛠️ 技術仕様
 
@@ -21,46 +23,56 @@ Unity用のカスタムシェーダープロジェクトです。Universal Rende
 ### 使用パッケージ
 - Universal Render Pipeline (17.2.0)
 - Input System (1.14.1)
-- Visual Scripting (1.9.7)
-- Timeline (1.8.7)
+- MessagePack (カスタム実装)
+- XR Support
+
+### 通信プロトコル
+- **TCP**: イベント送信・受信、メッセージング
+- **UDP**: Transformデータの高頻度送信
+- **MessagePack**: バイナリシリアライゼーション
 
 ### 対応プラットフォーム
-- Windows
-- macOS
-- Android
-- iOS
-- WebGL
+- Meta Quest 2/3/Pro
+- iPad (AR Foundation)
+- Windows Desktop
+- macOS Desktop
+- Android/iOS
 
 ## 📁 プロジェクト構造
 
 ```
-Soda3dartShader/
-├── Assets/
-│   ├── Shader/
-│   │   └── ShaderType1/
-│   │       └── typeA.shader          # カスタムシェーダーA
-│   ├── Scenes/
-│   │   └── SampleScene.unity         # サンプルシーン
-│   └── Settings/                     # URP設定ファイル
-├── Packages/
-│   └── manifest.json                 # パッケージ依存関係
-└── ProjectSettings/                  # プロジェクト設定
+3rdPosonViewOrSharingAppForXR/
+├── SodaUnityServer/
+│   ├── Assets/
+│   │   ├── Scripts/
+│   │   │   ├── SimpleServer.cs              # TCP/UDPサーバー
+│   │   │   ├── XRSharingClient.cs           # クライアント通信
+│   │   │   ├── XRSharingDataTypes.cs        # データ型定義
+│   │   │   └── Debug/
+│   │   │       └── UnityEventDebug.cs        # デバッグツール
+│   │   ├── Plugins/                         # MessagePack DLL
+│   │   └── Scenes/
+│   │       └── SampleScene.unity           # サンプルシーン
+│   ├── MessagePack/                         # MessagePackライブラリ
+│   └── ProjectSettings/                     # Unity設定
+└── README.md
 ```
 
-## 🎨 シェーダー仕様
+## 🎯 システムアーキテクチャ
 
-### typeA.shader
-基本的なテクスチャマッピングとカラーティント機能を提供するシェーダーです。
+### 通信フロー
+1. **接続確立**: クライアントがサーバーにTCP/UDP接続
+2. **セッション管理**: サーバーがセッションIDとユーザーIDを割り当て
+3. **Transform同期**: UDPで高頻度位置・姿勢データを送信
+4. **イベント送信**: TCPでイベントを特定のクライアントに送信
+5. **リアルタイム同期**: 全クライアント間でデータを同期
 
-#### プロパティ
-- `_InteractPos`: インタラクション位置 (Vector4)
-- `_BaseColor`: ベースカラー (Color)
-- `_BaseMap`: ベーステクスチャ (2D Texture)
-
-#### 特徴
-- URP対応
-- モバイル最適化
-- インタラクティブな位置ベースの効果
+### データ型
+- **ServerRequest/Response**: TCP通信用メッセージ
+- **TransformData**: UDP通信用位置・姿勢データ
+- **EventData**: イベント送信用データ
+- **HandTrackingData**: ハンドトラッキングデータ
+- **EyeTrackingData**: アイトラッキングデータ
 
 ## 🚀 セットアップ
 
@@ -68,146 +80,246 @@ Soda3dartShader/
 - Unity 2022.3 LTS 以降
 - Visual Studio または Visual Studio Code
 - Git
+- XR対応デバイス（オプション）
 
 ### インストール手順
 
 1. **リポジトリのクローン**
    ```bash
-   git clone https://github.com/your-username/SODA3dartShader.git
-   cd SODA3dartShader
+   git clone https://github.com/your-username/3rdPosonViewOrSharingAppForXR.git
+   cd 3rdPosonViewOrSharingAppForXR
    ```
 
 2. **Unity プロジェクトを開く**
    - Unity Hub を起動
    - "Add project from disk" を選択
-   - `Soda3dartShader` フォルダを選択
+   - `SodaUnityServer` フォルダを選択
 
 3. **依存関係のインストール**
    - Unity が自動的にパッケージをダウンロード
-   - 初回起動時は時間がかかる場合があります
+   - MessagePackライブラリが自動的に設定
 
 ## 📖 使用方法
 
 ### 基本的な使用方法
 
-1. **シーンを開く**
-   - `Assets/Scenes/SampleScene.unity` を開く
+#### 1. サーバーの起動
+```csharp
+// SimpleServerコンポーネントをGameObjectにアタッチ
+// Inspectorで設定を調整
+// "サーバー開始"ボタンをクリック
+```
 
-2. **シェーダーを適用**
-   - マテリアルを作成
-   - シェーダーを "Custom/typeA" に設定
-   - オブジェクトにマテリアルを適用
+#### 2. クライアントの接続
+```csharp
+// XRSharingClientコンポーネントをGameObjectにアタッチ
+// サーバーURLを設定
+// "接続"ボタンをクリック
+```
 
-3. **パラメータの調整**
-   - Inspector でシェーダープロパティを調整
-   - リアルタイムで効果を確認
+#### 3. Transform同期の設定
+```csharp
+// Transform配列を設定
+public Transform[] transformTargets;  // 送信するTransform
+public Transform[] syncTargets;       // 同期するTransform
 
-### カスタムシェーダーの作成
+// 自動同期を有効化
+enableAutoSync = true;
+```
 
-1. **新しいシェーダーファイルを作成**
-   ```hlsl
-   Shader "Custom/YourShader"
-   {
-       Properties
-       {
-           // プロパティを定義
-       }
-       
-       SubShader
-       {
-           // シェーダーコードを記述
-       }
-   }
-   ```
+#### 4. イベントシステムの使用
+```csharp
+// イベント送信
+client.SendEvent("BUTTON_CLICK", "{\"buttonName\":\"StartButton\"}");
 
-2. **URP対応の設定**
-   - `Tags { "RenderPipeline" = "UniversalPipeline" }` を追加
-   - URP用のインクルードファイルを使用
+// イベント受信（Inspectorで設定）
+OnCustomEvent.AddListener((eventType, eventData) => {
+    if (eventType == "BUTTON_CLICK") {
+        // ボタンクリック処理
+    }
+});
+```
+
+### 高度な使用方法
+
+#### 特定のユーザーにイベント送信
+```csharp
+// 特定のユーザーIDに送信
+client.SendEvent("PRIVATE_MESSAGE", "{\"message\":\"Hello\"}", "", "user_2");
+
+// 特定のセッションIDに送信
+client.SendEvent("SESSION_EVENT", "{\"data\":\"value\"}", "session_123");
+```
+
+#### カスタムイベントの実装
+```csharp
+// カスタムイベントデータクラス
+[System.Serializable]
+public class CustomEventData
+{
+    public string action;
+    public Vector3 position;
+    public int value;
+}
+
+// イベント送信
+var eventData = new CustomEventData
+{
+    action = "MOVE_OBJECT",
+    position = transform.position,
+    value = 100
+};
+client.SendEvent("CUSTOM_ACTION", JsonUtility.ToJson(eventData));
+```
 
 ## 🎯 クラス図
 
 ```mermaid
 classDiagram
-    class ShaderType1 {
-        +typeA.shader
-        +Properties
-        +SubShader
-        +Pass
+    class SimpleServer {
+        +TcpListener server
+        +UdpClient udpServer
+        +Dictionary connectedClientsDict
+        +Dictionary clientStreams
+        +string currentSessionId
+        +bool isRunning
+        +StartServer()
+        +StopServer()
+        +SendEventToClients()
+        +ForwardMessageToOtherClients()
+        +ForwardUdpDataToOtherClients()
     }
     
-    class URPShader {
-        <<interface>>
-        +UniversalPipeline
-        +MobileOptimized
-        +CrossPlatform
+    class XRSharingClient {
+        +TcpClient client
+        +UdpClient udpClient
+        +string sessionId
+        +string userId
+        +Transform[] transformTargets
+        +Transform[] syncTargets
+        +bool isConnected
+        +ConnectToServer()
+        +DisconnectFromServer()
+        +SendMessage()
+        +SendEvent()
+        +SendTransformData()
+        +OnMessageReceived
+        +OnEventReceived
+        +OnCustomEvent
     }
     
-    class CustomShader {
-        +_InteractPos: Vector4
-        +_BaseColor: Color
-        +_BaseMap: Texture2D
-        +vert(): Varyings
-        +frag(): half4
+    class XRSharingDataTypes {
+        +ServerRequest
+        +ServerResponse
+        +TransformData
+        +EventData
+        +HandTrackingData
+        +EyeTrackingData
     }
     
-    class Material {
-        +Shader: Shader
-        +Properties: MaterialPropertyBlock
-        +RenderQueue: int
+    class UnityEventDebug {
+        +XRSharingClient targetClient
+        +List eventHistory
+        +OnEventReceived()
+        +OnEventReceivedWithUserId()
+        +SendTestEvent()
+        +ShowEventStatistics()
     }
     
-    class GameObject {
-        +MeshRenderer: MeshRenderer
-        +Material: Material
-        +Transform: Transform
+    class MessagePackSystem {
+        +ServerRequestFormatter
+        +ServerResponseFormatter
+        +TransformDataFormatter
+        +EventDataFormatter
+        +MessagePackSerializer
     }
     
-    ShaderType1 --|> URPShader
-    CustomShader --|> ShaderType1
-    Material --> CustomShader
-    GameObject --> Material
+    class NetworkCommunication {
+        +TCP通信
+        +UDP通信
+        +MessagePackシリアライゼーション
+        +リアルタイム同期
+    }
+    
+    SimpleServer --> XRSharingDataTypes
+    XRSharingClient --> XRSharingDataTypes
+    XRSharingClient --> UnityEventDebug
+    XRSharingDataTypes --> MessagePackSystem
+    SimpleServer --> NetworkCommunication
+    XRSharingClient --> NetworkCommunication
 ```
 
 ## 🔧 開発ガイドライン
 
-### シェーダー開発のベストプラクティス
+### パフォーマンス最適化
 
-1. **パフォーマンス最適化**
-   - 不要な計算を避ける
-   - テクスチャサンプリングを最小限に
-   - モバイル向けの最適化を考慮
+1. **Transform送信頻度の調整**
+   ```csharp
+   // 送信間隔を調整（デフォルト: 0.1秒 = 10fps）
+   transformSendInterval = 0.05f; // 20fps
+   ```
 
-2. **コードの可読性**
-   - 適切なコメントを記述
-   - 変数名を分かりやすく
-   - 構造化されたコード
+2. **スムージングの設定**
+   ```csharp
+   // スムージング係数（0-1）
+   smoothingFactor = 0.1f; // 低い値 = より滑らか
+   ```
 
-3. **クロスプラットフォーム対応**
-   - プラットフォーム固有の処理を避ける
-   - URPの機能を活用
-   - モバイルとPCの両方でテスト
+3. **メモリ使用量の最適化**
+   ```csharp
+   // バッファサイズの調整
+   byte[] buffer = new byte[8192]; // デフォルト: 4096
+   ```
 
 ### デバッグ方法
 
-1. **Frame Debugger の使用**
-   - Window > Analysis > Frame Debugger
-   - シェーダーの実行状況を確認
+1. **UnityEventDebugの使用**
+   - イベント履歴の確認
+   - 通信状況の監視
+   - 統計情報の表示
 
-2. **Shader Graph との比較**
-   - 複雑なシェーダーは Shader Graph で作成
-   - カスタムシェーダーとの性能比較
+2. **ログレベルの調整**
+   ```csharp
+   // デバッグログの有効/無効
+   enableDebugLogs = true;
+   ```
 
-## 📚 参考資料
+3. **ネットワーク状況の確認**
+   - 接続状態の表示
+   - 送信/受信データの確認
+   - エラーログの監視
 
-### Unity公式ドキュメント
-- [Universal Render Pipeline](https://docs.unity3d.com/Packages/com.unity.render-pipelines.universal@latest/)
-- [Shader Graph](https://docs.unity3d.com/Packages/com.unity.shadergraph@latest/)
-- [HLSL Reference](https://docs.unity3d.com/Manual/SL-ShaderPrograms.html)
+## 📚 API リファレンス
 
-### 学習リソース
-- [Unity Shader Tutorial](https://unity.com/learn/tutorials)
-- [URP Shader Examples](https://github.com/Unity-Technologies/Graphics)
-- [Shader Forge](https://assetstore.unity.com/packages/tools/visual-scripting/shader-forge-22235)
+### SimpleServer
+
+#### 主要メソッド
+- `StartServer()`: サーバーを開始
+- `StopServer()`: サーバーを停止
+- `SendEventToClients(eventType, eventData, targetSessionId, targetUserId)`: イベント送信
+
+#### プロパティ
+- `isRunning`: サーバー実行状態
+- `connectedClients`: 接続クライアント数
+- `currentSessionId`: 現在のセッションID
+
+### XRSharingClient
+
+#### 主要メソッド
+- `ConnectToServer()`: サーバーに接続
+- `DisconnectFromServer()`: サーバーから切断
+- `SendMessage(message)`: メッセージ送信
+- `SendEvent(eventType, eventData, targetSessionId, targetUserId)`: イベント送信
+- `SendTransformData(transform, index)`: Transform送信
+
+#### イベント
+- `OnMessageReceived`: メッセージ受信
+- `OnEventReceived`: イベント受信
+- `OnCustomEvent`: UnityEvent（Inspector設定可能）
+- `OnTransformReceived`: Transform受信
+- `OnConnected`: 接続完了
+- `OnDisconnected`: 切断完了
+- `OnError`: エラー発生
 
 ## 🤝 コントリビューション
 
@@ -235,7 +347,7 @@ classDiagram
 
 ### コーディング規約
 
-- **シェーダーコード**: HLSL標準に従う
+- **C#コード**: Microsoft C# コーディング規約に従う
 - **コメント**: 日本語または英語で記述
 - **命名規則**: Unity標準に従う
 - **インデント**: スペース4文字
@@ -253,20 +365,30 @@ classDiagram
 ## 📞 サポート
 
 ### 問題の報告
-- [Issues](https://github.com/your-username/SODA3dartShader/issues) で問題を報告
+- [Issues](https://github.com/your-username/3rdPosonViewOrSharingAppForXR/issues) で問題を報告
 - バグレポートには再現手順を含める
 
 ### 質問・相談
-- [Discussions](https://github.com/your-username/SODA3dartShader/discussions) で質問
+- [Discussions](https://github.com/your-username/3rdPosonViewOrSharingAppForXR/discussions) で質問
 - 技術的な相談も歓迎
 
 ## 🔄 更新履歴
 
 ### v1.0.0 (2024-01-XX)
 - 初回リリース
-- typeA.shader の実装
-- URP対応
-- 基本的なシェーダー機能
+- TCP/UDP通信システム
+- Transform同期機能
+- イベントシステム
+- UnityEvent統合
+- デバッグツール
+
+## 🚀 今後の予定
+
+- [ ] WebRTC対応
+- [ ] 音声・映像ストリーミング
+- [ ] クラウドサーバー対応
+- [ ] モバイル最適化
+- [ ] セキュリティ強化
 
 ---
 
