@@ -84,6 +84,9 @@ public class XRSharingClient : MonoBehaviour
     public System.Action<string, string, string> OnEventReceived; // (eventType, eventData, fromUserId)
     public UnityEngine.Events.UnityEvent<string, string> OnCustomEvent; // (eventType, eventData) - Inspectorで設定可能
     
+    // PositionSyncSample用のイベント
+    public System.Action<string, string, string> OnPositionSyncEvent; // (eventType, eventData, fromUserId)
+    
     void Start()
     {
         if (autoConnect)
@@ -488,6 +491,15 @@ public class XRSharingClient : MonoBehaviour
                                     
                                     // UnityEventも発火
                                     OnCustomEvent?.Invoke(eventData.eventType, eventData.eventData);
+                                    
+                                    // PositionSyncSample用のイベント
+                                    if (eventData.eventType == "POSITION_SYNC" || 
+                                        eventData.eventType == "MARKER_PLACED" || 
+                                        eventData.eventType == "VPS_ANCHOR" || 
+                                        eventData.eventType == "SYNC_COMPLETE")
+                                    {
+                                        OnPositionSyncEvent?.Invoke(eventData.eventType, eventData.eventData, eventData.fromUserId);
+                                    }
                                 });
                             }
                             else
@@ -495,6 +507,15 @@ public class XRSharingClient : MonoBehaviour
                                 // フォールバック: 直接実行
                                 OnEventReceived?.Invoke(eventData.eventType, eventData.eventData, eventData.fromUserId);
                                 OnCustomEvent?.Invoke(eventData.eventType, eventData.eventData);
+                                
+                                // PositionSyncSample用のイベント
+                                if (eventData.eventType == "POSITION_SYNC" || 
+                                    eventData.eventType == "MARKER_PLACED" || 
+                                    eventData.eventType == "VPS_ANCHOR" || 
+                                    eventData.eventType == "SYNC_COMPLETE")
+                                {
+                                    OnPositionSyncEvent?.Invoke(eventData.eventType, eventData.eventData, eventData.fromUserId);
+                                }
                             }
                         }
                         catch (Exception eventError)

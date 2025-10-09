@@ -247,6 +247,68 @@ public class SimpleServer : MonoBehaviour
     }
     
     /// <summary>
+    /// イベントを他のクライアントに転送
+    /// </summary>
+    void ForwardEventToOtherClients(XRSharing.EventData eventData, string fromUserId)
+    {
+        // 他のクライアントにイベントを転送
+        foreach (var kvp in clientStreams)
+        {
+            string targetUserId = kvp.Key;
+            NetworkStream targetStream = kvp.Value;
+            
+            if (targetUserId != fromUserId) // 送信者以外に転送
+            {
+                try
+                {
+                    // セッションIDフィルタリング
+                    if (!string.IsNullOrEmpty(eventData.targetSessionId) && currentSessionId != eventData.targetSessionId)
+                    {
+                        continue;
+                    }
+                    
+                    // ユーザーIDフィルタリング
+                    if (!string.IsNullOrEmpty(eventData.targetUserId) && targetUserId != eventData.targetUserId)
+                    {
+                        continue;
+                    }
+                    
+                    var forwardEvent = new XRSharing.EventData
+                    {
+                        header = eventData.header,
+                        eventType = eventData.eventType,
+                        eventData = eventData.eventData,
+                        fromUserId = fromUserId,
+                        targetSessionId = eventData.targetSessionId,
+                        targetUserId = eventData.targetUserId,
+                        timestamp = eventData.timestamp,
+                        sessionId = currentSessionId
+                    };
+                    
+                    try
+                    {
+                        var options = MessagePackSerializerOptions.Standard.WithResolver(CompositeResolver.Create(
+                            new IMessagePackFormatter[] { new EventDataFormatter() },
+                            new IFormatterResolver[] { EventDataResolver.Instance }
+                        ));
+                        byte[] forwardData = MessagePackSerializer.Serialize(forwardEvent, options);
+                        targetStream.Write(forwardData, 0, forwardData.Length);
+                        Debug.Log($"イベント転送成功 [{fromUserId} → {targetUserId}]: {eventData.eventType}");
+                    }
+                    catch (Exception serializeError)
+                    {
+                        Debug.LogError($"イベント転送シリアライゼーションエラー [{targetUserId}]: {serializeError.Message}");
+                    }
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError($"イベント転送エラー [{targetUserId}]: {e.Message}");
+                }
+            }
+        }
+    }
+    
+    /// <summary>
     /// イベントを特定のクライアントに送信
     /// </summary>
     public void SendEventToClients(string eventType, string eventData, string targetSessionId = "", string targetUserId = "")
@@ -390,43 +452,94 @@ public class SimpleServer : MonoBehaviour
                 
                 if (bytesRead > 0)
                 {
-                    // サンプルと同じ方式でデシリアライズ
+                    // データタイプを判定して適切にデシリアライズ
                     byte[] actualData = new byte[bytesRead];
                     Array.Copy(buffer, 0, actualData, 0, bytesRead);
-                    var reader = new MessagePackReader(actualData);
-                    var deserializeOptions = MessagePackSerializerOptions.Standard;
-                    var formatter = new ServerRequestFormatter();
-                    var request = formatter.Deserialize(ref reader, deserializeOptions);
-                    
-                    Debug.Log("受信 [" + userId + "]: " + request.message);
-                    
-                    // メッセージ転送処理
-                    ForwardMessageToOtherClients(request, userId);
-                    
-                    // 送信者への確認レスポンス
-                    var response = new XRSharing.ServerResponse
-                    {
-                        message = "メッセージ受信確認",
-                        timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
-                        success = true,
-                        sessionId = currentSessionId ?? "default_session",
-                        fromUserId = userId ?? "default_user"
-                    };
                     
                     try
                     {
-                        // サンプルと同じ方式でシリアライズ
-                        var responseOptions = MessagePackSerializerOptions.Standard.WithResolver(CompositeResolver.Create(
-                            new IMessagePackFormatter[] { new ServerResponseFormatter() },
-                            new IFormatterResolver[] { ServerResponseResolver.Instance }
-                        ));
-                        byte[] responseData = MessagePackSerializer.Serialize(response, responseOptions);
-                        stream.Write(responseData, 0, responseData.Length);
-                        Debug.Log("確認レスポンス送信成功: " + userId);
+                        // まずServerRequestとして試行
+                        var reader = new MessagePackReader(actualData);
+                        var deserializeOptions = MessagePackSerializerOptions.Standard;
+                        var formatter = new ServerRequestFormatter();
+                        var request = formatter.Deserialize(ref reader, deserializeOptions);
+                        
+                        Debug.Log("受信 [" + userId + "]: " + request.message);
+                        
+                        // メッセージ転送処理
+                        ForwardMessageToOtherClients(request, userId);
+                        
+                        // 送信者への確認レスポンス
+                        var response = new XRSharing.ServerResponse
+                        {
+                            message = "メッセージ受信確認",
+                            timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+                            success = true,
+                            sessionId = currentSessionId ?? "default_session",
+                            fromUserId = userId ?? "default_user"
+                        };
+                        
+                        try
+                        {
+                            // サンプルと同じ方式でシリアライズ
+                            var responseOptions = MessagePackSerializerOptions.Standard.WithResolver(CompositeResolver.Create(
+                                new IMessagePackFormatter[] { new ServerResponseFormatter() },
+                                new IFormatterResolver[] { ServerResponseResolver.Instance }
+                            ));
+                            byte[] responseData = MessagePackSerializer.Serialize(response, responseOptions);
+                            stream.Write(responseData, 0, responseData.Length);
+                            Debug.Log("確認レスポンス送信成功: " + userId);
+                        }
+                        catch (Exception responseError)
+                        {
+                            Debug.LogError("確認レスポンス送信エラー: " + responseError.Message);
+                        }
                     }
-                    catch (Exception responseError)
+                    catch (Exception requestError)
                     {
-                        Debug.LogError("確認レスポンス送信エラー: " + responseError.Message);
+                        // ServerRequestで失敗した場合、EventDataとして試行
+                        try
+                        {
+                            var reader = new MessagePackReader(actualData);
+                            var deserializeOptions = MessagePackSerializerOptions.Standard;
+                            var eventFormatter = new EventDataFormatter();
+                            var eventData = eventFormatter.Deserialize(ref reader, deserializeOptions);
+                            
+                            Debug.Log($"イベント受信 [{userId}]: {eventData.eventType} - {eventData.eventData}");
+                            
+                            // イベント転送処理
+                            ForwardEventToOtherClients(eventData, userId);
+                            
+                            // 送信者への確認レスポンス
+                            var response = new XRSharing.ServerResponse
+                            {
+                                message = "イベント受信確認",
+                                timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+                                success = true,
+                                sessionId = currentSessionId ?? "default_session",
+                                fromUserId = userId ?? "default_user"
+                            };
+                            
+                            try
+                            {
+                                // サンプルと同じ方式でシリアライズ
+                                var responseOptions = MessagePackSerializerOptions.Standard.WithResolver(CompositeResolver.Create(
+                                    new IMessagePackFormatter[] { new ServerResponseFormatter() },
+                                    new IFormatterResolver[] { ServerResponseResolver.Instance }
+                                ));
+                                byte[] responseData = MessagePackSerializer.Serialize(response, responseOptions);
+                                stream.Write(responseData, 0, responseData.Length);
+                                Debug.Log("イベント確認レスポンス送信成功: " + userId);
+                            }
+                            catch (Exception responseError)
+                            {
+                                Debug.LogError("イベント確認レスポンス送信エラー: " + responseError.Message);
+                            }
+                        }
+                        catch (Exception eventError)
+                        {
+                            Debug.LogError("データデシリアライズエラー: " + eventError.Message);
+                        }
                     }
                 }
             }
